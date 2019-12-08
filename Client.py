@@ -4,12 +4,14 @@ import threading
 
 conf = configparser.ConfigParser()
 conf.read('conf.ini')
+
 server_connection = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 serverName = 'localhost'
-serverPort = 13000
+serverPort = 11000
 runSystem = True
 runClient = False
 heartbeater = None
+overload = False
 
 # Handshake with input
 def handshake():
@@ -17,40 +19,26 @@ def handshake():
     server_connection.connect((serverName, serverPort))
     while conCount <= 1:
         if conCount == 0:
-            # To connect, write: com-0
-            SYN = input("Send your request: ")
-            # See conTest-method
-            runProgram, runClient = conTest(SYN)
-            if runProgram and runClient:
-                SYNMessage = SYN + " done"
-                server_connection.send(SYNMessage.encode())
+            SYNMessage = "com-0"
+            server_connection.send(SYNMessage.encode())
         elif conCount == 1:
             temp, serverAddress = server_connection.recvfrom(2048)
             message = temp.decode()
             # Testing if rejected or accepted
             if " " in message.lower():
                 if message.lower() == "com-0 accept":
+                    server_connection.send("com-0 accept".encode())
+                    con = server_connection.recv(2048)
+                    message = con.decode()
 
-                    # To connect, write: com-0 accept
-                    ACK = input("Send your ack.: ")
-                    # See conTest-method
-                    runProgram, runClient = conTest(ACK)
+                    runSystem = True
 
-                    if runProgram and runClient:
-                        server_connection.send(ACK.encode())
-                        con = server_connection.recv(2048)
-                        message = con.decode()
-
-                        # Server rejected client
-                        if message.lower() == "false":
-                            runClient = not bool(message)
-                        return (runProgram, runClient), server_connection
-
-                    # Client used "exit"
+                    # Server rejected client
+                    if message.lower() == "false":
+                        runClient = not bool(message)
                     else:
-                        server_connection.send(ACK.encode())
-                        conCount = 3
-                        return (runProgram, runClient), server_connection
+                        runClient = True
+                    return (runSystem, runClient), server_connection
 
             # Server rejected client
             else:
@@ -60,7 +48,7 @@ def handshake():
                     # so IF message = false, then bool(message) must be not bool(message)
                     runClient = not bool(message)
                     conCount = 3
-                return (runProgram, runClient), server_connection
+                return (runSystem, runClient), server_connection
         conCount += 1
 
 
@@ -86,19 +74,19 @@ def conTest(message):
 # method use for less redundancy
 def sendMessage(message, counter):
     # See conTest-method
-    program, client = conTest(message)
+    runSystem, runClient = conTest(message)
 
     # Constructing counter: message
     # where counter is 1 higher than recieved
     counter += 1
-    currentMessage = str(counter) + ": " + message
+    currentMessage = "msg-" + str(counter) + ": " + message
     clientCon.send(currentMessage.encode())
 
-    return program, client
+    return runSystem, runClient
 
-def heartbeat(clientCon):
+def heartbeat():
     server_connection.send("con-h 0x00".encode())
-    heartbeater = threading.Timer(3, heartbeat, [clientCon])
+    heartbeater = threading.Timer(3, heartbeat)
     heartbeater.start()
 
 
@@ -111,9 +99,6 @@ while runSystem:
     # Running if client is connected
     if runClient:
 
-        if conf["Client"]["KeepAlive"] == "yes":
-            heartbeat(clientCon)
-
         if firstCon:
             message = input("Write to the server: ")
             counter = -1
@@ -121,19 +106,39 @@ while runSystem:
             firstCon = False
         else:
             temp = clientCon.recv(2048).decode()
-            if temp == "con-res 0xFE":
-                print("server response")
+            if temp.lower() == "skip":
+                overload = True
+            if overload:
+                print("to many messages")
+                waiting = clientCon.recv(2048).decode()
+                if waiting == "ready":
+                    print("ready again.")
+                    overload = False
+                    continue
+                else:
+                    continue
+
             else:
-                findInt = temp.split(": ")
-                counter = int(findInt[0])
+                if temp.startswith("con-"):
+                    print("Server Resetting Connection")
+                    firstCon = True
+                    clientCon.send("con-res 0xFF")
+                else:
+                    tempCounter = temp[4:]
+                    findInt = tempCounter.split(": ")
+                    counter = int(findInt[0])
 
-                print(f"res-{temp}")
-                message = input("Write to the server: ")
+                    print(temp)
+                    message = input("Write to the server: ")
 
-                runSystem, runClient = sendMessage(message, counter)
+                    runSystem, runClient = sendMessage(message, counter)
+
 
     else:
         run, clientCon = handshake()
+
         runSystem, runClient = run
         if runClient:
+            if conf["Client"]["KeepAlive"] == "yes":
+                heartbeat()
             firstCon = True
